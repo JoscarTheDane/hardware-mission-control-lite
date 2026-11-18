@@ -50,18 +50,25 @@ running on the same PC:
 
 ## Options
 
+- **No download — open it from GitHub Pages:**
+  <https://joscarthedane.github.io/hardware-mission-control-lite/>
+  Chrome/Edge will ask once: *“this site wants to access your local network”* →
+  **Allow** (the sensor feed lives on your own PC; nothing else leaves your machine).
+  After that one click it is LIVE forever. If you accidentally clicked *Block*:
+  site settings → Local network access → Allow.
 - **Another machine's feed:** open
   `index.html?feed=http://192.168.1.50:60000/json.json`
   (the choice is remembered; `?feed=` always wins).
 - **Browser refuses to load the feed from `file://`** (rare, some hardened
-  settings): serve the folder with any static server, or just use the GitHub
-  Pages link for this repo — both send a normal origin and the feed allows it.
+  settings): use the Pages link above, or serve the folder with any static
+  server — both send a normal origin and the feed allows it.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | Badge says **NO FEED** | RemoteHWInfo isn't running, or HWiNFO's sensors window is closed. Start both, then refresh. |
+| LIVE from `file://` but NO FEED from the Pages link | You dismissed the *“access local network”* prompt — allow it in the site settings (padlock icon in the address bar). |
 | Badge LIVE but panels say *empty feed* | RemoteHWInfo was started without `-gpuz=0`, or HWiNFO shared memory is disabled in Preferences. |
 | Values fine but some rows missing | That sensor isn't enabled in HWiNFO (Sensors window → right-click → Sensor settings). GPU Hot Spot, for example, is a per-VBIOS option. |
 | Works, then goes OFFLINE whenever another dashboard opens | RemoteHWInfo serves **one client at a time**. Close the other. |
