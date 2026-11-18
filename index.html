@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control — Hardware HUD</title>
+<meta name="description" content="Single-file HWiNFO dashboard. No server. Reads RemoteHWInfo on this PC.">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #121724; --panel2: #0e1320;
+    --fg: #e8eaf0; --mut: #7d879e; --line: #1e2638;
+    --ok: #3ecf8e; --warn: #f5a623; --hot: #ff5c5c;
+    --cpu: #4f8ef7; --gpu: #b072ff; --pow: #ffb454; --ram: #38c8d8;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    color: var(--fg); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; padding: 16px; min-height: 100vh;
+    background:
+      radial-gradient(1300px 750px at 72% -12%, #121a2c 0%, rgba(18,26,44,0) 60%),
+      radial-gradient(900px 600px at 8% 110%, #0e1524 0%, rgba(14,21,36,0) 55%),
+      linear-gradient(180deg, #0b0e15 0%, #080a10 100%);
+    background-attachment: fixed;
+  }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 18px; font-weight: 650; letter-spacing: .02em; text-shadow: 0 2px 6px rgba(0,0,0,.6); }
+  h1 .sub { color: var(--mut); font-weight: 400; font-size: 13px; }
+  .badge { font-size: 11px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--mut); background: rgba(0,0,0,.25); box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+  .badge.live { color: var(--ok); border-color: var(--ok); box-shadow: 0 0 12px -4px var(--ok), inset 0 1px 0 rgba(255,255,255,.06); }
+  .badge.demo { color: var(--warn); border-color: var(--warn); }
+  #clock { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--mut); font-size: 13px; }
+  #err { color: var(--warn); font-size: 12px; margin-bottom: 10px; display: none; }
+  /* ---- arrange controls ---- */
+  .abtn { font-family: inherit; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--mut);
+    background: linear-gradient(180deg, #1d2536, #141a28); border: 1px solid var(--line); border-radius: 99px;
+    padding: 4px 13px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07);
+    transition: color .2s, border-color .2s; }
+  .abtn:hover { color: var(--fg); border-color: #3a4560; }
+  .abtn.on { color: var(--cpu); border-color: var(--cpu); box-shadow: 0 0 10px -3px var(--cpu), inset 0 1px 0 rgba(255,255,255,.07); }
+  #btnReset { display: none; }
+  body.arr #btnReset { display: inline-block; }
+  #hint { display: none; font-size: 11px; color: #5a6478; }
+  body.arr #hint { display: inline; }
+  /* ---- dashboard canvas ---- */
+  #dash { position: relative; }
+  /* ---- physical panels ---- */
+  .panel {
+    position: absolute; border-radius: 16px; padding: 12px 14px; overflow: hidden;
+    background: linear-gradient(168deg, #1c2334 0%, #151b2a 42%, #0f141e 100%);
+    border: 1px solid #2c3752;
+    box-shadow: 0 18px 40px -12px rgba(0,0,0,.78), 0 4px 10px rgba(0,0,0,.55),
+                inset 0 1px 0 rgba(255,255,255,.10), inset 0 -1px 0 rgba(0,0,0,.5);
+  }
+  .panel::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 46%; border-radius: 15px 15px 45% 45% / 15px 15px 14px 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,0)); pointer-events: none; }
+  .pbody { position: relative; height: 100%; display: flex; flex-direction: column; min-height: 0; }
+  .ph { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--mut); margin: 0 2px 6px;
+    display: flex; gap: 10px; align-items: center; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
+  .rz { display: none; }
+  body.arr .rz { display: block; position: absolute; right: 0; bottom: 0; width: 22px; height: 22px; cursor: nwse-resize; z-index: 5; }
+  body.arr .rz::after { content: ""; position: absolute; right: 4px; bottom: 5px; width: 9px; height: 9px;
+    border-right: 2px solid #6a7590; border-bottom: 2px solid #6a7590; border-radius: 0 0 4px 0; }
+  body.arr .panel { outline: 1px dashed rgba(125,145,190,.4); outline-offset: -1px; }
+  body.arr .panel:hover { outline-color: rgba(79,142,247,.8); }
+  body.arr .panel.drag { outline: 1px solid var(--cpu); z-index: 60; box-shadow: 0 26px 52px -12px rgba(0,0,0,.8), 0 3px 8px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07); }
+  body.arr .pbody { cursor: move; }
+  body.arr .prow[data-k], body.arr .trow[data-k], body.arr .bar[data-k] { cursor: grab; background: rgba(90,110,160,.08); border-radius: 6px; }
+  .dragging { opacity: .35 !important; }
+  .dropAt { outline: 1px solid var(--cpu) !important; outline-offset: -1px; }
+  /* ---- gauges ---- */
+  .gauge .pbody canvas { flex: 1 1 0; height: 0; width: 100%; min-height: 0; display: block; }
+  /* ---- load bars ---- */
+  .bars { display: flex; flex-direction: column; gap: 9px; justify-content: center; flex: 1; min-height: 0; overflow: auto; padding-right: 2px; }
+  .bar .lbl { display: flex; justify-content: space-between; font-size: 12px; color: var(--mut); margin-bottom: 4px; }
+  .bar .lbl b { color: var(--fg); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .track { height: 10px; border-radius: 6px; background: #0c111d; border: 1px solid #232c42; overflow: hidden;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,.75), inset 0 -1px 0 rgba(255,255,255,.04); }
+  .fill { height: 100%; border-radius: 6px; transition: width .8s cubic-bezier(.2,.8,.3,1); background-color: var(--c, var(--cpu));
+    background-image: linear-gradient(180deg, rgba(255,255,255,.3), rgba(255,255,255,.05) 45%, rgba(0,0,0,.15));
+    box-shadow: 0 0 10px -2px var(--c, var(--cpu)), inset 0 1px 0 rgba(255,255,255,.25); }
+  /* ---- charts ---- */
+  .chart canvas { flex: 1 1 0; height: 0; width: 100%; min-height: 70px; display: block; }
+  .chart .lg { display: inline-flex; gap: 5px; align-items: center; text-transform: none; letter-spacing: 0; }
+  .chart .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; box-shadow: 0 0 5px -1px rgba(0,0,0,.8); }
+  /* ---- picks rows ---- */
+  .pbody.scroll { overflow: auto; }
+  .prow { display: grid; grid-template-columns: minmax(58px, 1fr) 56px 62px minmax(70px, 1.5fr); gap: 6px; align-items: center;
+    padding: 2.5px 4px; border-bottom: 1px solid #141a29; font-size: 12px; }
+  .prow:last-child { border-bottom: 0; }
+  .paxis { border-bottom: 0; padding: 1px 0 0; }
+  .paxis .ax { position: relative; height: 13px; }
+  .paxis .ax i { position: absolute; top: 4px; transform: translateX(-50%); font-style: normal; font-size: 9px; color: #6a7590; }
+  .paxis .ax u { position: absolute; top: 3px; width: 1px; height: 6px; background: #5d6b8a; }
+  .paxis .ax i.n { color: #7d879e; }
+  .prow .pn { color: #c6cddd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .prow .pv { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .prow .pm { text-align: right; color: var(--mut); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .prow svg { display: block; }
+  /* ---- temperatures ---- */
+  .trow { display: grid; grid-template-columns: 104px 1fr 44px; gap: 10px; align-items: center; padding: 4px; font-size: 12.5px; }
+  .trow .tspk { min-width: 60px; padding-right: 6px; }
+  .trow .tspk svg { display: block; }
+  .trow .tn { color: #c6cddd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trow .tv { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .toff { color: var(--mut); font-size: 12.5px; padding: 14px 2px; }
+  .tempGrid { display: grid; grid-template-columns: 1fr; align-content: start; flex: 1; min-height: 0; overflow: auto; }
+  .tempGrid.two { grid-template-columns: 1fr 1fr; gap: 0 18px; }
+  footer { margin-top: 14px; color: #4a5368; font-size: 11px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MISSION CONTROL <span class="sub">/ hardware HUD</span></h1>
+  <span id="badge" class="badge">…</span>
+  <button id="btnArrange" class="abtn" title="Toggle arrange mode">⛶ arrange</button>
+  <button id="btnReset" class="abtn" title="Restore default layout">reset layout</button>
+  <span id="hint">drag blocks to move · corner to resize · rows to reorder — saved automatically</span>
+  <span id="clock"></span>
+</header>
+<div id="err"></div>
+
+<div id="dash">
+  <div class="panel gauge" data-id="g1"><div class="pbody"><div class="ph">CPU temp</div><canvas id="gCpuT"></canvas></div><i class="rz"></i></div>
+  <div class="panel gauge" data-id="g2"><div class="pbody"><div class="ph">GPU temp</div><canvas id="gGpuT"></canvas></div><i class="rz"></i></div>
+  <div class="panel gauge" data-id="g3"><div class="pbody"><div class="ph">GPU power</div><canvas id="gPow"></canvas></div><i class="rz"></i></div>
+  <div class="panel" data-id="bars"><div class="pbody"><div class="ph">Loads</div><div class="bars" id="bars"></div></div><i class="rz"></i></div>
+
+  <div class="panel chart" data-id="cTemp"><div class="pbody">
+    <div class="ph">Temperature °C
+      <span class="lg"><span class="dot" style="background:var(--cpu)"></span>CPU</span>
+      <span class="lg"><span class="dot" style="background:var(--gpu)"></span>GPU</span>
+    </div><canvas id="cTemp"></canvas></div><i class="rz"></i></div>
+  <div class="panel chart" data-id="cLoad"><div class="pbody">
+    <div class="ph">Load %
+      <span class="lg"><span class="dot" style="background:var(--cpu)"></span>CPU</span>
+      <span class="lg"><span class="dot" style="background:var(--gpu)"></span>GPU</span>
+    </div><canvas id="cLoad"></canvas></div><i class="rz"></i></div>
+  <div class="panel chart" data-id="cPow"><div class="pbody">
+    <div class="ph">GPU power W <span class="lg"><span class="dot" style="background:var(--pow)"></span>W</span></div>
+    <canvas id="cPow"></canvas></div><i class="rz"></i></div>
+
+  <div class="panel" data-id="pCpu"><div class="pbody scroll"><div class="ph">CPU · speed &amp; fabric</div><div id="pkCpu"><div class="toff">Collecting samples…</div></div></div><i class="rz"></i></div>
+  <div class="panel" data-id="pGpu"><div class="pbody scroll"><div class="ph">GPU</div><div id="pkGpu"><div class="toff">Collecting samples…</div></div></div><i class="rz"></i></div>
+  <div class="panel" data-id="pSys"><div class="pbody scroll"><div class="ph">System · memory &amp; misc</div><div id="pkSys"><div class="toff">Collecting samples…</div></div></div><i class="rz"></i></div>
+
+  <div class="panel" data-id="temps"><div class="pbody"><div class="ph">Temperatures °C</div><div id="tempRows" class="tempGrid"></div></div><i class="rz"></i></div>
+</div>
+<footer>HWiNFO + RemoteHWInfo on this PC → this page · no server · 2 s refresh · graphs auto-scale 5 → 60 min · layout saves to this browser</footer>
+
+<script>
+(function () {
+"use strict";
+/* feed: ?feed=http://host:60000/json.json overrides; remembered in localStorage */
+var FEED_URL = (new URLSearchParams(location.search).get("feed")) ||
+               (function () { try { return JSON.parse(localStorage.getItem("mcl_feed_v1")); } catch (e) { return null; } })() ||
+               "http://127.0.0.1:60000/json.json";
+try { localStorage.setItem("mcl_feed_v1", JSON.stringify(FEED_URL)); } catch (e) {}
+var C = { ok: "#3ecf8e", warn: "#f5a623", hot: "#ff5c5c", cpu: "#4f8ef7", gpu: "#b072ff", pow: "#ffb454", ram: "#38c8d8", mut: "#7d879e", line: "#1e2638" };
+
+/* ---------- storage ---------- */
+function lsGet(k, fb) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch (e) { return fb; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+/* ---------- layout engine ---------- */
+var DEFAULTS = {
+  g1:     { x: 0,      y: 0,   w: 24.25, h: 250 },
+  g2:     { x: 25.25,  y: 0,   w: 24.25, h: 250 },
+  g3:     { x: 50.5,   y: 0,   w: 24.25, h: 250 },
+  bars:   { x: 75.75,  y: 0,   w: 24.25, h: 250 },
+  cTemp:  { x: 0,      y: 262, w: 32.5,  h: 205 },
+  cLoad:  { x: 33.75,  y: 262, w: 32.5,  h: 205 },
+  cPow:   { x: 67.5,   y: 262, w: 32.5,  h: 205 },
+  pCpu:   { x: 0,      y: 479, w: 32.5,  h: 360 },
+  pGpu:   { x: 33.75,  y: 479, w: 32.5,  h: 360 },
+  pSys:   { x: 67.5,   y: 479, w: 32.5,  h: 360 },
+  temps:  { x: 0,      y: 851, w: 100,   h: 430 }
+};
+var LAY = lsGet("mcl_lay_v1", null) || {};
+Object.keys(DEFAULTS).forEach(function (id) { if (!LAY[id]) LAY[id] = DEFAULTS[id]; });
+var dash = document.getElementById("dash");
+var zTop = 10;
+
+function applyLayout() {
+  var maxB = 0;
+  var panels = dash.querySelectorAll(".panel");
+  for (var i = 0; i < panels.length; i++) {
+    var p = panels[i], L = LAY[p.dataset.id];
+    if (!L) continue;
+    p.style.left = L.x + "%"; p.style.top = L.y + "px";
+    p.style.width = L.w + "%"; p.style.height = L.h + "px";
+    if (L.y + L.h > maxB) maxB = L.y + L.h;
+  }
+  dash.style.height = (maxB + 8) + "px";
+}
+function saveLayout() { lsSet("mcl_lay_v1", LAY); }
+
+/* drag-move + corner-resize (arrange mode only) */
+var arr = false;
+dash.addEventListener("pointerdown", function (e) {
+  if (!arr) return;
+  var p = e.target.closest(".panel"); if (!p) return;
+  var rz = e.target.closest(".rz");
+  var L = LAY[p.dataset.id]; if (!L) return;
+  if (e.target.closest("button") && !rz) return;
+  e.preventDefault();
+  var startX = e.clientX, startY = e.clientY;
+  var ox = L.x, oy = L.y, ow = L.w, oh = L.h;
+  var cw = dash.clientWidth || 1;
+  p.classList.add("drag"); p.style.zIndex = ++zTop;
+  function mv(ev) {
+    var dx = ev.clientX - startX, dy = ev.clientY - startY;
+    if (rz) {
+      L.w = Math.max(12, Math.round((ow + dx / cw * 100) * 100) / 100);
+      L.h = Math.max(120, Math.round(oh + dy));
+    } else {
+      L.x = Math.round(Math.max(0, Math.min(100 - L.w, ox + dx / cw * 100)) * 100) / 100;
+      L.y = Math.max(0, Math.round(oy + dy));
+    }
+    applyLayout();
+  }
+  function up() {
+    document.removeEventListener("pointermove", mv);
+    document.removeEventListener("pointerup", up);
+    p.classList.remove("drag");
+    saveLayout();
+    if (lastData) render(lastData);
+  }
+  document.addEventListener("pointermove", mv);
+  document.addEventListener("pointerup", up);
+});
+
+/* arrange toggle */
+var btnA = document.getElementById("btnArrange");
+function setArrange(on) {
+  arr = on;
+  document.body.classList.toggle("arr", on);
+  btnA.classList.toggle("on", on);
+  setRowDraggable(on);
+}
+btnA.addEventListener("click", function () { setArrange(!arr); });
+document.getElementById("btnReset").addEventListener("click", function () {
+  LAY = {}; Object.keys(DEFAULTS).forEach(function (id) { LAY[id] = DEFAULTS[id]; });
+  ORD = {}; lsSet("mcl_rows_v1", ORD);
+  saveLayout(); applyLayout(); if (lastData) render(lastData);
+});
+if (location.hash === "#arrange") setArrange(true);
+
+/* ---------- row reordering (arrange mode) ---------- */
+var ORD = lsGet("mcl_rows_v1", {});   // { panelId: [rowLabel, ...] }
+function orderRows(pid, items) {
+  var o = ORD[pid]; if (!o || !o.length) return items;
+  var idx = function (it) { var i = o.indexOf(it.k !== undefined ? it.k : it.lbl); return i < 0 ? 1e9 : i; };
+  return items.slice().sort(function (a, b) { return idx(a) - idx(b); });
+}
+function setRowDraggable(on) {
+  var rows = dash.querySelectorAll(".prow[data-k], .trow[data-k], .bar[data-k]");
+  for (var i = 0; i < rows.length; i++) rows[i].draggable = on && rows[i].dataset.k !== "_axis";
+}
+var dragCtx = null;
+dash.addEventListener("dragstart", function (e) {
+  var row = e.target.closest ? e.target.closest(".prow[data-k], .trow[data-k], .bar[data-k]") : null;
+  if (!arr || !row || row.dataset.k === "_axis") { e.preventDefault(); return; }
+  dragCtx = { row: row, pid: row.closest(".panel").dataset.id };
+  window.__dragging = true;
+  try { e.dataTransfer.setData("text/plain", row.dataset.k); e.dataTransfer.effectAllowed = "move"; } catch (x) {}
+  setTimeout(function () { row.classList.add("dragging"); }, 0);
+});
+dash.addEventListener("dragover", function (e) {
+  if (!dragCtx) return;
+  e.preventDefault();
+  var t = e.target.closest ? e.target.closest(".prow[data-k], .trow[data-k], .bar[data-k]") : null;
+  clearDropMarks();
+  if (t && t !== dragCtx.row && t.dataset.k !== "_axis" && t.closest(".panel") === dragCtx.row.closest(".panel")) t.classList.add("dropAt");
+});
+dash.addEventListener("drop", function (e) {
+  if (!dragCtx) return;
+  e.preventDefault();
+  var t = e.target.closest ? e.target.closest(".prow[data-k], .trow[data-k], .bar[data-k]") : null;
+  if (t && t !== dragCtx.row && t.dataset.k !== "_axis" && t.closest(".panel") === dragCtx.row.closest(".panel")) {
+    var r = t.getBoundingClientRect();
+    if (e.clientY > r.top + r.height / 2) t.parentNode.insertBefore(dragCtx.row, t.nextSibling);
+    else t.parentNode.insertBefore(dragCtx.row, t);
+    var host = dragCtx.row.parentNode;
+    var keep = [];
+    var kids = host.children;
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i].dataset ? kids[i].dataset.k : null;
+      if (k && k !== "_axis") keep.push(k);
+    }
+    ORD[dragCtx.pid] = keep;
+    lsSet("mcl_rows_v1", ORD);
+  }
+  finishDrag();
+  if (lastData) render(lastData);
+});
+dash.addEventListener("dragend", function () { finishDrag(); });
+function clearDropMarks() {
+  var m = dash.querySelectorAll(".dropAt");
+  for (var i = 0; i < m.length; i++) m[i].classList.remove("dropAt");
+}
+function finishDrag() {
+  clearDropMarks();
+  if (dragCtx) dragCtx.row.classList.remove("dragging");
+  dragCtx = null; window.__dragging = false;
+}
+
+/* ---------- helpers ---------- */
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+function num(v) { var n = parseFloat(String(v).replace(/[^\d.\-]/g, "")); return isNaN(n) ? null : n; }
+function lvlColor(name, n, unit) {
+  if (n === null) return "";
+  if (unit === "MB") return "";
+  var l = name.toLowerCase();
+  if (/temperat|temp/.test(l)) return n >= 85 ? "hot" : n >= 70 ? "warn" : "ok";
+  if (/usage|load|utilization/.test(l)) return n >= 92 ? "hot" : n >= 80 ? "warn" : "ok";
+  return "";
+}
+function findSensor(sensors, rx, groupRx) {
+  for (var i = 0; i < sensors.length; i++) {
+    if (!rx.test(sensors[i].name)) continue;
+    if (groupRx && !groupRx.test(sensors[i].group || "")) continue;
+    return sensors[i];
+  }
+  return null;
+}
+
+/* ---------- client data layer (replaces the relay; no server needed) ---------- */
+function normalize(raw) {
+  var out = [];
+  if (raw && typeof raw === "object" && raw.hwinfo && typeof raw.hwinfo === "object") {
+    var hw = raw.hwinfo;
+    var blocks = (hw.sensors || []).filter(function (s) { return s && typeof s === "object"; })
+      .map(function (s) { return [parseInt(s.entryIndex, 10) || 0, String(s.sensorNameUser || "HWiNFO")]; })
+      .sort(function (a, b) { return a[0] - b[0]; });
+    function groupFor(idx) {
+      var name = "HWiNFO";
+      for (var i = 0; i < blocks.length; i++) { if (blocks[i][0] <= idx) name = blocks[i][1]; else break; }
+      return name;
+    }
+    (hw.readings || []).forEach(function (r) {
+      if (!r || typeof r !== "object") return;
+      var name = r.labelUser || r.label, val = r.value;
+      if (name === undefined || name === null || val === undefined || val === null) return;
+      var unit = String(r.unit || "");
+      if (unit === "Yes/No") { val = (parseFloat(val) !== 0) ? "Yes" : "No"; unit = ""; }
+      var idx = parseInt(r.sensorIndex, 10) || 0;
+      out.push({ name: String(name), value: String(val), unit: unit, group: groupFor(idx) });
+    });
+    return out;
+  }
+  if (raw && typeof raw === "object" && raw.afterburner && typeof raw.afterburner === "object") {
+    (raw.afterburner.entries || []).forEach(function (r) {
+      if (!r || typeof r !== "object") return;
+      var name = r.localName || r.name, val = r.data;
+      if (name === undefined || name === null || val === undefined || val === null) return;
+      var dig = parseInt(r.digits, 10) || 0;
+      var f = parseFloat(val);
+      val = isNaN(f) ? String(val) : f.toFixed(dig);
+      var u = String(r.localUnits || r.units || "");
+      var low = String(name).toLowerCase();
+      var grp = low.indexOf("gpu") >= 0 ? "GPU" : low.indexOf("cpu") >= 0 ? "CPU"
+        : (/memory|ram/.test(low) ? "Memory" : "System");
+      out.push({ name: String(name), value: val, unit: u, group: grp });
+    });
+    return out;
+  }
+  var arr2 = raw;
+  if (arr2 && !Array.isArray(arr2)) {
+    ["sensors", "data", "entries", "items"].some(function (k) { if (Array.isArray(arr2[k])) { arr2 = arr2[k]; return true; } return false; });
+    if (!Array.isArray(arr2)) arr2 = Object.keys(arr2).map(function (k) { return arr2[k]; });
+  }
+  (Array.isArray(arr2) ? arr2 : []).forEach(function (it) {
+    if (!it || typeof it !== "object") return;
+    function first(d) {
+      for (var i = 1; i < arguments.length; i++) if (d[arguments[i]] !== undefined && d[arguments[i]] !== null && d[arguments[i]] !== "") return d[arguments[i]];
+      return null;
+    }
+    var name = first(it, "name", "sensorName", "label", "desc", "description");
+    var val = first(it, "value", "sensorValue", "val", "current");
+    if (name === null || val === null) return;
+    out.push({ name: String(name), value: String(val),
+      unit: String(first(it, "unit", "sensorUnit", "units") || ""),
+      group: String(first(it, "sensorType", "group", "category", "type") || "") });
+  });
+  return out;
+}
+
+var HIST_LEN = 1800, PICK_LEN = 1800;   /* 1800 x 2 s = 60 min */
+var HIST = { ts: [], cpu_t: [], gpu_t: [], cpu_l: [], gpu_l: [], pow: [], ram: [], vram: [] };
+var KEY_PATTERNS = {
+  cpu_t: [[/cpu \(tctl\/tdie\)/i, null], [/cpu.*(temperat|package)/i, null]],
+  gpu_t: [[/gpu temperature/i, /nvidia/i], [/gpu.*temperat/i, /^(?!.*radeon)/i]],
+  cpu_l: [[/total cpu usage/i, null], [/cpu.*(usage|load|utilization)/i, null]],
+  gpu_l: [[/gpu d3d usage/i, /nvidia/i], [/gpu utilization/i, /nvidia/i], [/^gpu1 usage$/i, /^gpu$/i], [/gpu.*(usage|load|utilization)/i, /nvidia/i]],
+  pow:   [[/gpu power/i, /nvidia/i], [/gpu.*power|board power|package power/i, null]],
+  ram:   [[/^(?!gpu).*(memory|ram).*(usage|load)/i, null]],
+  vram:  [[/gpu memory usage/i, /nvidia/i], [/^gpu1 fb usage$/i, /^gpu$/i], [/gpu.*memory/i, /nvidia/i]]
+};
+function findKey(S, cands) {
+  for (var c = 0; c < cands.length; c++) {
+    var rx = cands[c][0], grx = cands[c][1];
+    for (var i = 0; i < S.length; i++) {
+      if (rx.test(S[i].name) && (!grx || grx.test(S[i].group || ""))) return S[i];
+    }
+  }
+  return null;
+}
+function recordHistory(S) {
+  HIST.ts.push(Date.now() / 1000);
+  Object.keys(HIST).forEach(function (k) {
+    if (k === "ts") return;
+    var s = findKey(S, KEY_PATTERNS[k]);
+    HIST[k].push(s ? num(s.value) : null);
+  });
+  if (HIST.ts.length > HIST_LEN) Object.keys(HIST).forEach(function (k) { HIST[k].shift(); });
+}
+
+var PICK_SPECS = [
+  ["CPU temp (Tctl/Tdie)", [[/cpu \(tctl/i, /cpu \[#0\]|ryzen/i, null], [/cpu1 temperature/i, /^cpu$/i, null]]],
+  ["CPU IOD hotspot",      [[/cpu iod hotspot/i, null, null]]],
+  ["CPU core voltage",     [[/vddcr/i, /cpu \[#0\]|ryzen/i, /^v/i]]],
+  ["CPU core current",     [[/cpu.*current/i, /cpu \[#0\]|ryzen/i, null]]],
+  ["CPU package power",    [[/package power/i, /cpu \[#0\]|ryzen/i, /^w/i]]],
+  ["CPU load",             [[/total cpu usage/i, null, /%/i]]],
+  ["CPU fan RPM",          [[/^cpu( fan)?$/i, null, /rpm/i]]],
+  ["CPU OPT fan RPM",      [[/cpu_opt|cpu optional|cpu ext/i, null, /rpm/i]]],
+  ["Infinity Fabric",      [[/infinity fabric|fclk/i, null, /hz/i]]],
+  ["L3 cache clock",       [[/l3/i, /cpu \[#0\]|ryzen/i, /hz/i]]],
+  ["GPU temp",             [[/^gpu temperature$|^gpu1 temperature$/i, /nvidia|^gpu$/i, null]]],
+  ["GPU hotspot",          [[/hot ?spot/i, /nvidia/i, null]]],
+  ["GPU mem junction",     [[/memory junction/i, /nvidia/i, null]]],
+  ["GPU power",            [[/^gpu power$|^gpu1 power$/i, /nvidia|^gpu$/i, /^w/i]]],
+  ["GPU power limit",      [[/power limit/i, /nvidia/i, null]]],
+  ["GPU core voltage",     [[/core voltage/i, /nvidia/i, /^v/i]]],
+  ["GPU fan 1 RPM",        [[/^gpu fan ?1$/i, /nvidia/i, /rpm/i]]],
+  ["GPU fan 2 RPM",        [[/^gpu fan ?2$/i, /nvidia/i, /rpm/i]]],
+  ["GPU fan 3 RPM",        [[/^gpu fan ?3$/i, /nvidia/i, /rpm/i]]],
+  ["GPU core clock",       [[/^gpu clock$|core clock/i, /nvidia/i, /hz/i]]],
+  ["GPU mem clock",        [[/memory clock/i, /nvidia/i, /hz/i]]],
+  ["GPU core load",        [[/core load|d3d usage|gpu utilization|^gpu1 usage$/i, /nvidia|^gpu$/i, /%/i]]],
+  ["GPU bus load",         [[/bus load/i, /nvidia/i, null]]],
+  ["RAM used",             [[/physical memory used/i, null, null]]],
+  ["RAM available",        [[/physical memory available/i, null, null]]],
+  ["VM committed",         [[/virtual memory committed/i, null, null]]],
+  ["VRM MOS temp",         [[/^vrm mos/i, null, null]]],
+  ["Chipset temp",         [[/^pch$|chipset/i, null, null]]]
+];
+function find3(S, cands) {
+  for (var c = 0; c < cands.length; c++) {
+    var rx = cands[c][0], grx = cands[c][1], urx = cands[c][2];
+    for (var i = 0; i < S.length; i++) {
+      if (rx.test(S[i].name) && (!grx || grx.test(S[i].group || "")) && (!urx || urx.test(String(S[i].unit || "")))) return S[i];
+    }
+  }
+  return null;
+}
+var PICKS = {};
+function pickAdd(label, s) {
+  var n = num(s.value); if (n === null) return;
+  if (/^%$/.test(String(s.unit || "")) && (n < -1 || n > 100)) return;   /* unit guard: RPM never taints % */
+  var e = PICKS[label] || (PICKS[label] = { hist: [], min: n, max: n, now: n, unit: String(s.unit || "") });
+  e.hist.push(n); if (e.hist.length > PICK_LEN) e.hist.shift();
+  if (n < e.min) e.min = n;
+  if (n > e.max) e.max = n;
+  e.now = n; e.unit = String(s.unit || "");
+}
+function recordPicks(S) {
+  PICK_SPECS.forEach(function (spec) { var s = find3(S, spec[1]); if (s) pickAdd(spec[0], s); });
+  S.forEach(function (s) {
+    var nm = s.name, grp = s.group || "", un = String(s.unit || ""), m;
+    if (/spd hub temperature/i.test(nm) && /dimm/i.test(grp)) {
+      m = grp.match(/#(\d)/) || grp.match(/dimm\s*\[?(\d)/i);
+      pickAdd("DIMM " + (m ? m[1] : "?") + " temp", s);
+    } else if (/^(vdd|vddq|vpp)$/.test(nm) && /dimm/i.test(grp)) {
+      m = grp.match(/#(\d)/);
+      pickAdd("DIMM " + (m ? m[1] : "?") + " " + nm, s);
+    } else if (/^drive temperature/i.test(nm) && /s\.m\.a\.r\.t|ssd|hdd|wd|king|sam|cruc/i.test(grp)) {
+      var dv = grp.replace(/^S\.M\.A\.R\.T\.?\s*/i, "").replace(/\s*\(.*$/, "").replace(/\s*\[.*$/, "").replace(/^[:\s]+/, "").trim();
+      m = nm.match(/\d/);
+      pickAdd("Drive" + (m ? " T" + m[0] : "") + " [" + dv + "]", s);
+    } else if (/bandwidth/i.test(nm) && (/dram/i.test(grp) || /dram/i.test(nm))) {
+      pickAdd(/read/i.test(nm) ? "DRAM read BW" : "DRAM write BW", s);
+    } else if (/chassis fan|sys fan|^fan ?\d|pump/i.test(nm) && /rpm/i.test(un)) {
+      pickAdd(nm + " RPM", s);
+    } else if (/^\+?12 ?v|vdd12/i.test(nm) && /system|vrm|mch|mainboard|motherboard/i.test(grp)) {
+      pickAdd(nm, s);
+    }
+  });
+}
+function picksPayload() {
+  return Object.keys(PICKS).map(function (k) {
+    var v = PICKS[k];
+    return { label: k, now: v.now, min: v.min, max: v.max, unit: v.unit, hist: v.hist };
+  });
+}
+
+/* ---------- gauges ---------- */
+var disp = {};
+function zoneColor(frac) { return frac >= .85 ? C.hot : frac >= .7 ? C.warn : C.ok; }
+function gauge(id, value, max, label, unit, fixedColor) {
+  var cv = document.getElementById(id);
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  var ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var cx = W / 2, cy = H * .545, r = Math.min(W, H) * .385;
+  var START = Math.PI * .75, SWEEP = Math.PI * 1.5;
+  if (disp[id] === undefined) disp[id] = value || 0;
+  disp[id] += ((value || 0) - disp[id]) * .5;
+  var v = disp[id], frac = Math.max(0, Math.min(1, v / max));
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineCap = "round";
+  ctx.lineWidth = r * .16;
+  ctx.strokeStyle = "#0a0e17";
+  ctx.beginPath(); ctx.arc(cx, cy, r, START, START + SWEEP); ctx.stroke();
+  // proper instrument scale: minor + major ticks with values at their true angles
+  ctx.textAlign = "center";
+  for (var t = 0; t <= 8; t++) {
+    var ta = START + SWEEP * t / 8;
+    var major = t % 2 === 0;
+    ctx.strokeStyle = major ? "#4a5570" : "#333e56";
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ta) * (r + r * .10), cy + Math.sin(ta) * (r + r * .10));
+    ctx.lineTo(cx + Math.cos(ta) * (r + r * (major ? .22 : .16)), cy + Math.sin(ta) * (r + r * (major ? .22 : .16)));
+    ctx.stroke();
+    if (major) {
+      ctx.fillStyle = C.mut; ctx.font = (r * .145) + "px Segoe UI, sans-serif";
+      ctx.fillText(Math.round(max * t / 8), cx + Math.cos(ta) * r * 1.32, cy + Math.sin(ta) * r * 1.32 + r * .05);
+    }
+  }
+  var col = fixedColor || zoneColor(frac);
+  ctx.lineWidth = r * .16; ctx.strokeStyle = col;
+  ctx.shadowColor = col; ctx.shadowBlur = 18;
+  if (frac > 0.002) { ctx.beginPath(); ctx.arc(cx, cy, r, START, START + SWEEP * frac); ctx.stroke(); }
+  ctx.shadowBlur = 0;
+  var a = START + SWEEP * frac;
+  ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r * .28, cy + Math.sin(a) * r * .28);
+  ctx.lineTo(cx + Math.cos(a) * r * .82, cy + Math.sin(a) * r * .82); ctx.stroke();
+  ctx.fillStyle = "#e8eaf0"; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 7); ctx.fill();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#e8eaf0"; ctx.font = "600 " + (r * .46) + "px Segoe UI, sans-serif";
+  ctx.fillText((value === null || value === undefined ? "--" : Math.round(value * 10) / 10), cx, cy + r * .76);
+  ctx.fillStyle = C.mut; ctx.font = (r * .15) + "px Segoe UI, sans-serif";
+  ctx.fillText(label + "  ·  " + unit, cx, cy + r * 1.02);
+}
+
+/* ---------- history charts ---------- */
+function chart(id, series, colors, yMin, yMax) {
+  var cv = document.getElementById(id);
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  var ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  var pad = { l: 30, r: 6, t: 6, b: 16 };
+  var lo = yMin, hi = yMax;
+  if (hi === null) {
+    hi = 10;
+    series.forEach(function (s) { s.forEach(function (v) { if (v !== null && v !== undefined && v > hi) hi = v; }); });
+    hi = Math.ceil(hi * 1.15 / 10) * 10;
+  }
+  ctx.strokeStyle = C.line; ctx.fillStyle = C.mut; ctx.font = "10px Segoe UI"; ctx.lineWidth = 1;
+  for (var i = 0; i <= 4; i++) {
+    var yv = lo + (hi - lo) * i / 4;
+    var y = pad.t + (H - pad.t - pad.b) * (1 - i / 4);
+    ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.textAlign = "right"; ctx.fillText(Math.round(yv), pad.l - 5, y + 3);
+  }
+  ctx.textAlign = "center";
+  var n = series.length ? series[0].length : 0;
+  if (n < 2) return;
+  var maxN = 600;
+  var win = 0;
+  series.forEach(function (s) { if (s.length > win) win = s.length; });
+  if (win > maxN) win = maxN;
+  var winSec = (window.CHART_WIN && window.CHART_WIN > 4) ? window.CHART_WIN : (win - 1) * 2;
+  var fmt = function (sec) { sec = Math.round(sec); return sec >= 90 ? Math.round(sec / 60) + "m" : sec + "s"; };
+  var X = function (i) { return pad.l + (W - pad.l - pad.r) * (i / (win - 1)); };
+  var Y = function (v) { return pad.t + (H - pad.t - pad.b) * (1 - (v - lo) / (hi - lo)); };
+  ctx.fillStyle = C.mut; ctx.textAlign = "center";
+  ctx.fillText(fmt(winSec), pad.l + 12, H - 4);
+  ctx.textAlign = "right"; ctx.fillText("now", W - pad.r, H - 4);
+  series.forEach(function (s, si) {
+    var col = colors[si];
+    if (!s.length) return;
+    ctx.beginPath(); var started = false, firstX = 0, lastX = 0;
+    for (var i2 = 0; i2 < s.length; i2++) {
+      var v2 = s[i2]; if (v2 === null || v2 === undefined) continue;
+      var x2 = X(i2 + (win - s.length)), y2 = Y(v2);
+      if (!started) { ctx.moveTo(x2, y2); firstX = x2; started = true; } else ctx.lineTo(x2, y2);
+      lastX = x2;
+    }
+    if (!started) return;
+    var grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
+    grad.addColorStop(0, col + "33"); grad.addColorStop(1, col + "00");
+    ctx.lineTo(lastX, H - pad.b); ctx.lineTo(firstX, H - pad.b); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath(); started = false;
+    for (var j = 0; j < s.length; j++) {
+      var vv = s[j]; if (vv === null || vv === undefined) continue;
+      var xx = X(j + (win - s.length)), yy = Y(vv);
+      if (!started) { ctx.moveTo(xx, yy); started = true; } else ctx.lineTo(xx, yy);
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.shadowColor = col; ctx.shadowBlur = 6;
+    ctx.stroke();
+    for (var k = s.length - 1; k >= 0; k--) {
+      if (s[k] !== null && s[k] !== undefined) {
+        ctx.fillStyle = col; ctx.beginPath();
+        ctx.arc(X(k + (win - s.length)), Y(s[k]), 2.6, 0, 7); ctx.fill();
+        break;
+      }
+    }
+    ctx.shadowBlur = 0;
+  });
+}
+
+/* ---------- bars ---------- */
+function bar(lbl, val, unit, pct, color) {
+  var cls = lvlColor(lbl, val);
+  var w = Math.max(0, Math.min(100, (pct === null || pct === undefined) ? (val || 0) : pct));
+  return { k: lbl, html: '<div class="bar" data-k="' + esc(lbl) + '"><div class="lbl"><span>' + esc(lbl) + '</span><b>' +
+    (val === null ? "--" : val) + ' <span style="color:var(--mut);font-weight:400">' + esc(unit) + '</span></b></div>' +
+    '<div class="track"><div class="fill" style="width:' + w + '%;--c:' +
+    (cls === "hot" ? C.hot : cls === "warn" ? C.warn : color) + '"></div></div></div>' };
+}
+
+/* ---------- render ---------- */
+var lastData = null;
+function render(d) {
+  if (window.__dragging) return;   // never rebuild DOM mid-drag
+  lastData = d;
+  var badge = document.getElementById("badge");
+  badge.textContent = d.live ? "LIVE" : "NO FEED";
+  badge.className = "badge " + (d.live ? "live" : "demo");
+  document.getElementById("err").style.display = (d.error && !d.live) ? "block" : "none";
+  document.getElementById("err").textContent = "Feed unreachable at " + FEED_URL + " — " + (d.error || "") + " · showing last known values.";
+
+  var S = d.sensors || [];
+  var cpuT = findSensor(S, /cpu \(tctl\/tdie\)/i) || findSensor(S, /cpu.*(temperat|package)/i);
+  var gpuT = findSensor(S, /gpu temperature/i, /nvidia/i) || findSensor(S, /gpu.*temperat/i);
+  var pow  = findSensor(S, /gpu power$/i, /nvidia/i) || findSensor(S, /gpu.*power|board power|package power/i);
+  var cpuL = findSensor(S, /total cpu usage/i) || findSensor(S, /cpu.*(usage|load|utilization)/i);
+  var gpuL = findSensor(S, /gpu d3d usage/i, /nvidia/i) || findSensor(S, /^gpu1 usage$/i, /^gpu$/i) || findSensor(S, /gpu.*(usage|load|utilization)/i, /nvidia/i);
+  var ram  = findSensor(S, /^(?!gpu).*(memory|ram).*(usage|load)/i);
+  var vram = findSensor(S, /gpu memory usage/i, /nvidia/i) || findSensor(S, /^gpu1 fb usage$/i, /^gpu$/i) || findSensor(S, /gpu.*memory/i, /nvidia/i);
+  var fan  = findSensor(S, /fan(?! profile)/i);
+
+  gauge("gCpuT", cpuT ? num(cpuT.value) : null, 100, "CPU", "°C");
+  gauge("gGpuT", gpuT ? num(gpuT.value) : null, 100, "GPU", "°C");
+  gauge("gPow",  pow  ? num(pow.value)  : null, 600, "POWER", "W", C.pow);
+
+  var barsArr = [];
+  barsArr.push(bar("CPU load", cpuL ? Math.round(num(cpuL.value)) : null, "%", null, C.cpu));
+  barsArr.push(bar("GPU load", gpuL ? Math.round(num(gpuL.value)) : null, "%", null, C.gpu));
+  var usedS = findSensor(S, /physical memory used/i), availS = findSensor(S, /physical memory available/i);
+  var totRam = null;
+  if (usedS && availS) { var uu = num(usedS.value), aa = num(availS.value); if (uu !== null && aa !== null && uu + aa > 0) totRam = uu + aa; }
+  if (ram && ram.unit === "MB") {
+    barsArr.push(bar("System RAM", Math.round(num(ram.value) / 102.4) / 10, "GB", num(ram.value) * 100 / (totRam || 98304), C.ram));
+  } else if (ram) {
+    barsArr.push(bar("System RAM", Math.round(num(ram.value)), "%", null, C.ram));
+  }
+  if (vram) {
+    var vtot = null, vs = findSensor(S, /gpu.*(memory|fb).*(size|total)/i);
+    if (vs) vtot = num(vs.value);
+    if (/^%/.test(vram.unit || "")) barsArr.push(bar("GPU VRAM", Math.round(num(vram.value)), "%", null, C.gpu));
+    else barsArr.push(bar("GPU VRAM", Math.round(num(vram.value) / 102.4) / 10, "GB", num(vram.value) * 100 / (vtot || 32768), C.gpu));
+  }
+  if (fan) barsArr.push(bar("Fan", Math.round(num(fan.value)), fan.unit || "%", /^%/.test(fan.unit || "") ? num(fan.value) : null, C.ok));
+  document.getElementById("bars").innerHTML = orderRows("bars", barsArr).map(function (b) { return b.html; }).join("");
+
+  var H = d.history || {};
+  window.CHART_WIN = (H.ts && H.ts.length > 1) ? (H.ts[H.ts.length - 1] - H.ts[0]) : 0;
+  if (H.ts && H.ts.length > 1 && window.CHART_WIN > 3600) {
+    var cutoff = H.ts[H.ts.length - 1] - 3600, i0 = 0;
+    while (i0 < H.ts.length && H.ts[i0] < cutoff) i0++;
+    if (i0 > 0) {
+      window.CHART_WIN = H.ts[H.ts.length - 1] - H.ts[i0];
+      H.ts = H.ts.slice(i0);
+      ["cpu_t", "gpu_t", "cpu_l", "gpu_l", "pow", "ram", "vram"].forEach(function (k) { if (H[k]) H[k] = H[k].slice(i0); });
+    }
+  }
+  chart("cTemp", [H.cpu_t || [], H.gpu_t || []], [C.cpu, C.gpu], 20, 100);
+  chart("cLoad", [H.cpu_l || [], H.gpu_l || []], [C.cpu, C.gpu], 0, 100);
+  chart("cPow",  [H.pow || []], [C.pow], 0, null);
+
+  renderTemps(S, d.live);
+  renderPicks(d.picks);
+  if (arr) setRowDraggable(true);
+}
+
+/* ---------- picks panels ---------- */
+var TZ = 300, TZ_LIVE = 0.55;
+function sparkSvgT(h, color) {
+  if (!h || h.length < 3) return "";
+  var full = window.CHART_WIN || 0, n = h.length;
+  var span = Math.min(full, 3600);
+  if (full > span && n > 3) {
+    var keep = Math.max(3, Math.round(n * span / full));
+    h = h.slice(n - keep); n = keep;
+  }
+  var piece = span >= 600;
+  var mn = Math.min.apply(null, h), mx = Math.max.apply(null, h), rng = (mx - mn) || 1, pts = [];
+  for (var i = 0; i < n; i++) {
+    var x;
+    if (!piece) x = i / (n - 1);
+    else {
+      var ago = (n - 1 - i) * span / (n - 1);
+      x = ago <= TZ ? 1 - (ago / TZ) * TZ_LIVE
+                    : (1 - TZ_LIVE) * (span - ago) / (span - TZ);
+    }
+    pts.push((x * 100).toFixed(1) + "," + (2 + (1 - (h[i] - mn) / rng) * 16).toFixed(1));
+  }
+  return '<svg width="100%" height="20" viewBox="0 0 100 20" preserveAspectRatio="none">' +
+         '<polyline fill="none" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke="' + color + '" points="' + pts.join(" ") + '"/></svg>';
+}
+function sparkSvg(h, color) {
+  if (!h || h.length < 3) return "";
+  var mn = Math.min.apply(null, h), mx = Math.max.apply(null, h), rng = (mx - mn) || 1, n = h.length, pts = [];
+  for (var i = 0; i < n; i++) pts.push((i * 100 / (n - 1)).toFixed(1) + "," + (2 + (1 - (h[i] - mn) / rng) * 16).toFixed(1));
+  return '<svg width="100%" height="20" viewBox="0 0 100 20" preserveAspectRatio="none">' +
+         '<polyline fill="none" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke="' + color + '" points="' + pts.join(" ") + '"/></svg>';
+}
+function renderPicks(P) {
+  var hosts = { pCpu: document.getElementById("pkCpu"), pGpu: document.getElementById("pkGpu"), pSys: document.getElementById("pkSys") };
+  P = (P || []).filter(function (p) { return !/°?c$|degc|celsius/i.test(p.unit || ""); });
+  var g = { pCpu: [], pGpu: [], pSys: [] };
+  P.forEach(function (p) {
+    var l = p.label.toLowerCase();
+    if (l.indexOf("cpu") === 0 || l === "infinity fabric" || l === "l3 cache clock") g.pCpu.push(p);
+    else if (l.indexOf("gpu") === 0) g.pGpu.push(p);
+    else g.pSys.push(p);
+  });
+  function fmt(p) {
+    var u = p.unit, v = p.now, mn = p.min, mx = p.max;
+    if (/mb/i.test(u) && Math.abs(v) > 2048) { v /= 1024; mn /= 1024; mx /= 1024; u = "GB"; }
+    var f = function (x) { return Math.abs(x) >= 1000 ? Math.round(x) : Math.abs(x) >= 100 ? Math.round(x * 10) / 10 : Math.round(x * 100) / 100; };
+    return { v: f(v), mn: f(mn), mx: f(mx), u: u };
+  }
+  function kindColor(p) {
+    var u = String(p.unit || "").toLowerCase(), l = String(p.label || "").toLowerCase(), v = p.now || 0;
+    if (u === "w" || u === "watts") return C.pow;
+    if (u === "%" || /load|usage|util/.test(l)) return v >= 85 ? C.hot : v >= 50 ? C.warn : C.ok;
+    return C.cpu;
+  }
+  function pAxis() {
+    var span = Math.min(window.CHART_WIN || 0, 3600);
+    if (span < 120) return "";
+    var out = "";
+    if (span < 600) {
+      for (var t = Math.floor(span / 60) * 60; t >= 60; t -= 60) {
+        out += '<u style="left:' + ((1 - t / span) * 100).toFixed(1) + '%"></u>';
+      }
+      out += '<i style="left:auto;right:0;transform:none" class="n">now</i>';
+    } else {
+      for (var m = 1; m <= 5; m++) {
+        out += '<u style="left:' + ((1 - m / 5) * TZ_LIVE * 100).toFixed(1) + '%"></u>';
+      }
+      out += '<i style="left:2%">' + Math.round(span / 60) + "m</i>";
+      out += '<i style="left:' + ((1 - TZ_LIVE) * 100).toFixed(0) + '%">5m</i>';
+      out += '<i style="left:auto;right:0;transform:none" class="n">now</i>';
+    }
+    return '<div class="prow paxis" data-k="_axis"><span></span><span></span><span></span><span class="ax">' + out + "</span></div>";
+  }
+  Object.keys(hosts).forEach(function (pid) {
+    var el = hosts[pid]; if (!el) return;
+    if (!P.length) { el.innerHTML = '<div class="toff">Collecting samples…</div>'; return; }
+    var rows = orderRows(pid, g[pid].map(function (p) { return { k: p.label, p: p }; }));
+    el.innerHTML = rows.map(function (it) {
+      var p = it.p, fm = fmt(p), color = kindColor(p);
+      return '<div class="prow" data-k="' + esc(p.label) + '"><span class="pn">' + esc(p.label) + "</span>" +
+        '<span class="pv" style="color:' + color + '">' + fm.v + '<i style="font-style:normal;color:var(--mut);font-size:10px"> ' + esc(fm.u) + "</i></span>" +
+        '<span class="pm">' + fm.mn + " / " + fm.mx + "</span>" +
+        sparkSvgT(p.hist, color) + "</div>";
+    }).join("") + pAxis();
+  });
+}
+
+/* ---------- temperatures panel ---------- */
+function tempLabel(s) {
+  var n = s.name, g = s.group || "", m;
+  if (/spd hub/i.test(n) && /dimm/i.test(g)) { m = g.match(/#(\d)/) || g.match(/dimm\s*\[?(\d)/i); return "DIMM " + (m ? m[1] : "?") + " temp"; }
+  if (/^drive temperature/i.test(n)) {
+    var dv = g.replace(/^S\.M\.A\.R\.T\.?\s*/i, "").replace(/^[:\s]+/, "").replace(/\s*\(.*$/, "").replace(/\s*\[.*$/, "").trim();
+    m = n.match(/\d/);
+    return "Drive" + (m ? " T" + m[0] : "") + " " + (dv.length > 16 ? dv.slice(0, 15) + "…" : dv);
+  }
+  if (/^gpu temperature/i.test(n)) return /radeon|amd/i.test(g) ? "GPU (iGPU)" : "GPU";
+  if (/memory junction/i.test(n)) return "GPU VRAM junction";
+  if (/hot ?spot/i.test(n) && /gpu/i.test(g)) return "GPU hotspot";
+  if (/^cpu \(tctl/i.test(n)) return "CPU (Tctl/Tdie)";
+  if (/cpu die/i.test(n)) return "CPU die (avg)";
+  if (/ccd1 \(tdie\)/i.test(n)) return "CPU CCD1";
+  if (/^core(\d)/i.test(n)) return "Core " + (n.match(/^core(\d)/i)[1]);
+  if (/l3 cache/i.test(n)) return "L3 cache";
+  if (/iod hotspot/i.test(n)) return "CPU IOD hotspot";
+  if (/iod average/i.test(n)) return "CPU IOD avg";
+  if (/vddcr_vdd vrm/i.test(n)) return "VDDCR_VDD VRM";
+  if (/vddcr_soc vrm/i.test(n)) return "VDDCR_SOC VRM";
+  if (/vdd_misc vrm/i.test(n)) return "VDD_MISC VRM";
+  if (/^vrm mos/i.test(n)) return "VRM MOS";
+  if (/^pch$|chipset/i.test(n)) return "PCH";
+  if (/^system1$/i.test(n)) return "Motherboard";
+  return n.length > 24 ? n.slice(0, 23) + "…" : n;
+}
+function renderTemps(S, live) {
+  var el = document.getElementById("tempRows");
+  if (!live) { el.innerHTML = '<div class="toff">Sensor source offline — start HWiNFO (sensors window) and RemoteHWInfo on this PC. See README.</div>'; return; }
+  var isC = function (s) { return /°?c$|degc|celsius/i.test(String(s.unit || "")); };
+  var isFull = function (s) { return /[:\[]/.test(s.group || ""); };
+  var pool = S.filter(function (s) { return isC(s) && isFull(s); });
+  if (!pool.length) pool = S.filter(isC);
+  var seen = {}, rows = [];
+  pool.forEach(function (s) {
+    var lbl = tempLabel(s);
+    if (seen[lbl]) return;
+    var n = num(s.value);
+    if (n === null) return;
+    seen[lbl] = 1;
+    if (!window.T_HIST) window.T_HIST = {};
+    var hh = window.T_HIST[lbl] || (window.T_HIST[lbl] = []);
+    hh.push(n); if (hh.length > 1800) hh.shift();
+    rows.push({ k: lbl, lbl: lbl, n: n });
+  });
+  rows.sort(function (a, b) { return b.n - a.n; });
+  rows = orderRows("temps", rows);   // user order wins once set
+  var html = rows.map(function (r) {
+    var cls = r.n >= 85 ? C.hot : r.n >= 70 ? C.warn : C.ok;
+    return '<div class="trow" data-k="' + esc(r.lbl) + '"><span class="tn">' + esc(r.lbl) + '</span>' +
+      '<span class="tspk">' + sparkSvg(window.T_HIST[r.lbl], cls) + '</span>' +
+      '<span class="tv" style="color:' + cls + '">' + esc(String(Math.round(r.n * 10) / 10)) + '</span></div>';
+  }).join("");
+  el.className = rows.length > 14 ? "tempGrid two" : "tempGrid";
+  el.innerHTML = html || '<div class="toff">No temperature sensors in the current feed.</div>';
+}
+
+/* ---------- loop: fetch → normalize → record → render ---------- */
+function tick() {
+  fetch(FEED_URL + (FEED_URL.indexOf("?") < 0 ? "?" : "&") + "t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (raw) {
+      var S = normalize(raw);
+      if (!S.length) throw new Error("empty feed — is RemoteHWInfo running with -gpuz=0 and the HWiNFO sensors window open?");
+      recordHistory(S);
+      recordPicks(S);
+      render({ live: true, sensors: S, history: HIST, picks: picksPayload(), error: null });
+    })
+    .catch(function (e) {
+      render({ live: false, sensors: (lastData && lastData.sensors) || [], history: HIST,
+               picks: picksPayload(), error: String(e) });
+    });
+}
+setInterval(function () {
+  var d = new Date();
+  document.getElementById("clock").textContent = d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}, 1000);
+applyLayout();
+tick(); setInterval(tick, 2000);
+setInterval(function () { if (lastData) render(lastData); }, 400);
+window.addEventListener("resize", applyLayout);
+})();
+</script>
+</body>
+</html>
